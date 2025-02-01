@@ -13,6 +13,9 @@
 #define BOARD_SIZE 7 // Board size is 7x7
 #define NUM_THREADS 256
 #define MAX_BOARDS 10000000
+#define BOARDS_FILENAME "gpu_solution.txt"
+#define HASH_FILENAME "gpu_hash.txt"
+#define INITIAL_BOARD_FILENAME "initial_board.txt"
 
 // Macro to check CUDA errors
 #define CUDA_CHECK(call)                                                                 \
@@ -34,56 +37,52 @@
 
 // Valid cells on the board for decoding purposes
 const bool valid_cells[BOARD_SIZE * BOARD_SIZE] = {
-    0, 0, 1, 1, 1, 0, 0,
-    0, 0, 1, 1, 1, 0, 0,
-    1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1,
-    1, 1, 1, 1, 1, 1, 1,
-    0, 0, 1, 1, 1, 0, 0,
-    0, 0, 1, 1, 1, 0, 0,
+    0,0,1,1,1,0,0,
+    0,0,1,1,1,0,0,
+    1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,
+    1,1,1,1,1,1,1,
+    0,0,1,1,1,0,0,
+    0,0,1,1,1,0,0,
 };
 
-// Function to initialize the board with pegs and a random empty cell
-void initialize_board(int *board)
+// Function to decode the hash into a board
+__host__ int* decode_board(uint64_t hash)
 {
-    for (int i = 0; i < BOARD_SIZE; ++i)
+    int *board = (int *)malloc(BOARD_SIZE * BOARD_SIZE * sizeof(int));
+    if (!board)  // Check if allocation was successful
     {
-        for (int j = 0; j < BOARD_SIZE; ++j)
+        fprintf(stderr, "Memory allocation failed in decode_board()\n");
+        exit(EXIT_FAILURE);
+    }
+
+    for (int i = BOARD_SIZE * BOARD_SIZE - 1; i >= 0; --i)
+    {
+        board[i] = OUT_OF_BOUNDS;
+        if (valid_cells[i])
         {
-            if (i < 2 && j < 2)
-            {
-                board[i * BOARD_SIZE + j] = OUT_OF_BOUNDS;
-            }
-            else if (i < 2 && j > 4)
-            {
-                board[i * BOARD_SIZE + j] = OUT_OF_BOUNDS;
-            }
-            else if (i > 4 && j < 2)
-            {
-                board[i * BOARD_SIZE + j] = OUT_OF_BOUNDS;
-            }
-            else if (i > 4 && j > 4)
-            {
-                board[i * BOARD_SIZE + j] = OUT_OF_BOUNDS;
-            }
-            else
-            {
-                board[i * BOARD_SIZE + j] = PEG;
-            }
+            board[i] = hash % 3;
+            hash /= 3;
         }
     }
-    srand(time(NULL));
-    while(true) {
-        int x = rand() % BOARD_SIZE;
-        int y = rand() % BOARD_SIZE;
-        if (board[x * BOARD_SIZE + y] == PEG) {
-            board[x * BOARD_SIZE + y] = EMPTY;
-            break;
-        }
-    }
+    return board;  // Valid because board is allocated on the heap
 }
 
-// Function to check if a move is valid
+// Function to read the initial board from a file
+__host__ int* read_board_from_file()
+{
+    FILE *file = fopen(INITIAL_BOARD_FILENAME, "r");
+    uint64_t hash;
+    if(fscanf(file, "%lu", &hash) != 1)
+    {
+        fprintf(stderr, "Failed to read the initial board from file\n");
+        exit(EXIT_FAILURE);
+    }
+    int *board = decode_board(hash);
+    fclose(file);
+    return board;
+}
+
 // A move is valid if there is a peg at (x, y) and an empty space at (x + 2*dx, y + 2*dy) and a peg at (x + dx, y + dy)
 __device__ __host__ bool is_valid_move(int *board, int x, int y, int dx, int dy)
 {
@@ -138,11 +137,11 @@ __host__ void print_board(int *board)
     printf("\n");
 }
 
-
 // Function to print the board to a file
-__host__ void print_board_to_file(int *board, const char* filename)
+__host__ void print_board_to_file(int *board)
 {
-    FILE *file = fopen(filename, "a");
+    // Open the file
+    FILE *file = fopen(BOARDS_FILENAME, "a");
     for (int i = 0; i < BOARD_SIZE; ++i)
     {
         for (int j = 0; j < BOARD_SIZE; ++j)
@@ -163,6 +162,14 @@ __host__ void print_board_to_file(int *board, const char* filename)
         fprintf(file, "\n");
     }
     fprintf(file, "\n");
+    fclose(file);
+}
+
+// Function to print the hash to a file
+__host__ void print_hash_to_file(uint64_t hash)
+{
+    FILE *file = fopen(HASH_FILENAME, "a");
+    fprintf(file, "%lu\n", hash);
     fclose(file);
 }
 
@@ -190,25 +197,24 @@ void retrace_solution(uint64_t solution_hash, std::unordered_map<uint64_t, uint6
         solution_hash = board_map[solution_hash];
     }
 
+    // remove the file if it exists
+    FILE *board_file = fopen(BOARDS_FILENAME, "w");
+    fclose(board_file);
+
+    FILE *hash_file = fopen(HASH_FILENAME, "w");
+    fclose(hash_file);
+
     while (!solution_stack.empty())
     {
-        int board[BOARD_SIZE * BOARD_SIZE];
-        uint64_t hash = solution_stack.top();
+        uint64_t original_hash = solution_stack.top();
+        uint64_t hash = original_hash;
         solution_stack.pop();
 
-        // Decode the board from the hash
-        for (int i = BOARD_SIZE * BOARD_SIZE - 1; i >= 0; --i)
-        {
-            board[i] = OUT_OF_BOUNDS;
-            if (valid_cells[i])
-            {
-                board[i] = hash % 3;
-                hash /= 3;
-            }
-        }
-        print_board_to_file(board, "gpu_solution.txt");
+        int *board = decode_board(hash);
+        print_hash_to_file(original_hash);
+        print_board_to_file(board);
     }
-    printf("Solution written to gpu_solution.txt\n");
+    
 }
 
 // Kernel to process the boards
@@ -237,6 +243,9 @@ __global__ void process_boards(
     int board[BOARD_SIZE * BOARD_SIZE];
     for (int i = 0; i < BOARD_SIZE * BOARD_SIZE; ++i)
         board[i] = current_boards[idx * BOARD_SIZE * BOARD_SIZE + i];
+
+    // Increment the count of analyzed boards
+    atomicAdd(statistic_analyzed_boards, 1);
 
     bool moves_available = false;
 
@@ -278,9 +287,6 @@ __global__ void process_boards(
                             // Store the hash and the parent hash for retracing the solution
                             next_hashes[new_board_idx] = encode_board(new_board);
                             next_parents[new_board_idx] = current_hashes[idx];
-
-                            // Increment the count of analyzed boards
-                            atomicAdd(statistic_analyzed_boards, 1);
 
                             // Increment the count of pegs taken
                             atomicAdd(statistic_pegs_taken, 1);
@@ -331,6 +337,15 @@ void host_solve(int *initial_board)
     int *d_statistic_pegs_taken;
     int *d_statistic_boards_without_moves;
 
+    // Alocate memory for the next boards hashes and parents for filtering
+    uint64_t *next_hashes = (uint64_t *)malloc(MAX_BOARDS * sizeof(uint64_t));
+    uint64_t *next_parents = (uint64_t *)malloc(MAX_BOARDS * sizeof(uint64_t));
+    int *filtered_boards = (int *)malloc(MAX_BOARDS * BOARD_SIZE * BOARD_SIZE * sizeof(int));
+    uint64_t *filtered_hashes = (uint64_t *)malloc(MAX_BOARDS * sizeof(uint64_t));
+    int *next_boards = (int *)malloc(MAX_BOARDS * BOARD_SIZE * BOARD_SIZE * sizeof(int));
+
+    // Allocate memory on the device
+    std::chrono::high_resolution_clock::time_point allocation_start = std::chrono::high_resolution_clock::now();
     CUDA_CHECK(cudaMalloc(&d_current_boards, MAX_BOARDS * BOARD_SIZE * BOARD_SIZE * sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_current_hashes, MAX_BOARDS * sizeof(uint64_t)));
     CUDA_CHECK(cudaMalloc(&d_next_boards, MAX_BOARDS * BOARD_SIZE * BOARD_SIZE * sizeof(int)));
@@ -342,10 +357,15 @@ void host_solve(int *initial_board)
     CUDA_CHECK(cudaMalloc(&d_statistic_analyzed_boards, sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_statistic_pegs_taken, sizeof(int)));
     CUDA_CHECK(cudaMalloc(&d_statistic_boards_without_moves, sizeof(int)));
+    std::chrono::high_resolution_clock::time_point allocation_end = std::chrono::high_resolution_clock::now();
+    printf("Allocation time: %f seconds\n", std::chrono::duration<double>(allocation_end - allocation_start).count());
 
+    // Add the initial board to the map
     uint64_t initial_hash = encode_board(initial_board);
     board_map[initial_hash] = (uint64_t)-1;
 
+    // Copy the initial board to the device
+    std::chrono::high_resolution_clock::time_point copy_start = std::chrono::high_resolution_clock::now();
     CUDA_CHECK(cudaMemcpy(d_current_boards, initial_board, BOARD_SIZE * BOARD_SIZE * sizeof(int), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemcpy(d_current_hashes, &initial_hash, sizeof(uint64_t), cudaMemcpyHostToDevice));
     CUDA_CHECK(cudaMemset(d_next_count, 0, sizeof(int)));
@@ -354,12 +374,15 @@ void host_solve(int *initial_board)
     CUDA_CHECK(cudaMemset(d_statistic_analyzed_boards, 0, sizeof(int)));
     CUDA_CHECK(cudaMemset(d_statistic_pegs_taken, 0, sizeof(int)));
     CUDA_CHECK(cudaMemset(d_statistic_boards_without_moves, 0, sizeof(int)));
+    std::chrono::high_resolution_clock::time_point copy_end = std::chrono::high_resolution_clock::now();
+    printf("Copy time: %f seconds\n", std::chrono::duration<double>(copy_end - copy_start).count());
 
     int num_current_boards = 1;
     int threads_per_block = NUM_THREADS;
     int blocks;
     int solution_found = 0;
     uint64_t solution_hash;
+
 
     std::chrono::high_resolution_clock::time_point start = std::chrono::high_resolution_clock::now();
     while (true)
@@ -373,6 +396,7 @@ void host_solve(int *initial_board)
             d_current_boards, d_current_hashes, d_next_boards, d_next_hashes, d_next_parents, d_next_count,
             d_solution_found, d_solution_idx, num_current_boards, d_statistic_analyzed_boards, d_statistic_pegs_taken, d_statistic_boards_without_moves);
 
+        
         CUDA_CHECK(cudaDeviceSynchronize());
 
         // Copy the solution found flag and the number of next boards
@@ -380,22 +404,16 @@ void host_solve(int *initial_board)
         int next_count;
         CUDA_CHECK(cudaMemcpy(&next_count, d_next_count, sizeof(int), cudaMemcpyDeviceToHost));
 
-        // Copy the next boards, hashes and parents to the host
-        uint64_t *next_hashes = (uint64_t *)malloc(next_count * sizeof(uint64_t));
-        uint64_t *next_parents = (uint64_t *)malloc(next_count * sizeof(uint64_t));
-        int *filtered_boards = (int *)malloc(next_count * BOARD_SIZE * BOARD_SIZE * sizeof(int));
-        uint64_t *filtered_hashes = (uint64_t *)malloc(next_count * sizeof(uint64_t));
-        int *next_boards = (int *)malloc(next_count * BOARD_SIZE * BOARD_SIZE * sizeof(int));
         int filtered_count = 0;
 
         CUDA_CHECK(cudaMemcpy(next_hashes, d_next_hashes, next_count * sizeof(uint64_t), cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(next_parents, d_next_parents, next_count * sizeof(uint64_t), cudaMemcpyDeviceToHost));
         CUDA_CHECK(cudaMemcpy(next_boards, d_next_boards, next_count * BOARD_SIZE * BOARD_SIZE * sizeof(int), cudaMemcpyDeviceToHost));
-        
+
+
         if (solution_found)
         {
             // Solution has been found, copy the solution index and the solution hash
-
             int solution_idx;
             CUDA_CHECK(cudaMemcpy(&solution_idx, d_solution_idx, sizeof(int), cudaMemcpyDeviceToHost));
             CUDA_CHECK(cudaMemcpy(&solution_hash, d_next_hashes + solution_idx, sizeof(uint64_t), cudaMemcpyDeviceToHost));
@@ -407,7 +425,10 @@ void host_solve(int *initial_board)
 
         // No solution found
         if (next_count == 0)
+        {
+            std::cout << "no solution found" << std::endl;
             break;
+        }
 
         // Filter the next boards
         for (int i = 0; i < next_count; ++i)
@@ -429,17 +450,11 @@ void host_solve(int *initial_board)
         }
 
 
-
         num_current_boards = filtered_count;
 
         // Copy the filtered boards and hashes to the device
         CUDA_CHECK(cudaMemcpy(d_current_boards, filtered_boards, num_current_boards * BOARD_SIZE * BOARD_SIZE * sizeof(int), cudaMemcpyHostToDevice));
         CUDA_CHECK(cudaMemcpy(d_current_hashes, filtered_hashes, num_current_boards * sizeof(uint64_t), cudaMemcpyHostToDevice));
-
-        free(next_hashes);
-        free(next_parents);
-        free(filtered_boards);
-        free(filtered_hashes);
     }
     std::chrono::high_resolution_clock::time_point end = std::chrono::high_resolution_clock::now();
 
@@ -468,6 +483,7 @@ void host_solve(int *initial_board)
     printf("Pegs taken: %d\n", statistic_pegs_taken);
     printf("Boards without moves: %d\n", statistic_boards_without_moves);
 
+    // Free the memory
     CUDA_CHECK(cudaFree(d_current_boards));
     CUDA_CHECK(cudaFree(d_current_hashes));
     CUDA_CHECK(cudaFree(d_next_boards));
@@ -480,12 +496,17 @@ void host_solve(int *initial_board)
     CUDA_CHECK(cudaFree(d_statistic_analyzed_boards));
     CUDA_CHECK(cudaFree(d_statistic_pegs_taken));
     CUDA_CHECK(cudaFree(d_statistic_boards_without_moves));
+
+    free(next_hashes);
+    free(next_parents);
+    free(filtered_boards);
+    free(filtered_hashes);
 }
 
 int main()
 {
     int initial_board[BOARD_SIZE * BOARD_SIZE];
-    initialize_board(initial_board);
+    memcpy(initial_board, read_board_from_file(), BOARD_SIZE * BOARD_SIZE * sizeof(int));
     print_board(initial_board);
     host_solve(initial_board);
     return 0;
