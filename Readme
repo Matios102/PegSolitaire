@@ -1,6 +1,6 @@
 # Peg Solitaire Solver
 
-## Game Description
+## Game Description 
 Peg Solitaire is a board game for one player involving movement of pegs on a board with holes. The goal is to empty the entire board except for a single peg, usually by jumping pegs over each other and removing the jumped peg, similar to checkers.
 
 ## Solutions
